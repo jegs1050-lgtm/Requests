@@ -78,8 +78,31 @@ from ._types import is_prepared as _is_prepared
 
 DEFAULT_POOLBLOCK = False
 DEFAULT_POOLSIZE = 10
-DEFAULT_RETRIES = 0
+#: Number of times a failed *connection* (DNS lookup, refused connection or
+#: connect timeout) is retried by default. Requests that reached the server
+#: are never retried by default.
+DEFAULT_RETRIES = 3
+#: Backoff factor between connection retries: sleeps are 0s, 0.5s, 1s, ...
+DEFAULT_RETRY_BACKOFF = 0.25
 DEFAULT_POOL_TIMEOUT = None
+
+
+def default_retry() -> Retry:
+    """Return the :class:`urllib3.util.Retry` policy Requests uses by default.
+
+    Only connection errors are retried, with exponential backoff. Read errors,
+    other errors and HTTP status codes (including ``Retry-After`` responses)
+    are never retried, so a request whose data may have reached the server is
+    not sent twice.
+    """
+    return Retry(
+        total=DEFAULT_RETRIES,
+        connect=DEFAULT_RETRIES,
+        read=False,
+        other=0,
+        backoff_factor=DEFAULT_RETRY_BACKOFF,
+        respect_retry_after_header=False,
+    )
 
 
 def _urllib3_request_context(
@@ -168,8 +191,9 @@ class HTTPAdapter(BaseAdapter):
     :param max_retries: The maximum number of retries each connection
         should attempt. Note, this applies only to failed DNS lookups, socket
         connections and connection timeouts, never to requests where data has
-        made it to the server. By default, Requests does not retry failed
-        connections. If you need granular control over the conditions under
+        made it to the server. By default, Requests retries failed connections
+        3 times with a short exponential backoff; pass ``0`` to disable
+        retries. If you need granular control over the conditions under
         which we retry a request, import urllib3's ``Retry`` class and pass
         that instead.
     :param pool_block: Whether the connection pool should block for connections.
@@ -206,6 +230,8 @@ class HTTPAdapter(BaseAdapter):
         pool_block: bool = DEFAULT_POOLBLOCK,
     ) -> None:
         if max_retries == DEFAULT_RETRIES:
+            self.max_retries = default_retry()
+        elif max_retries == 0:
             self.max_retries = Retry(0, read=False)
         else:
             self.max_retries = Retry.from_int(max_retries)

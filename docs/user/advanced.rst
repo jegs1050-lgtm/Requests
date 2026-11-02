@@ -116,6 +116,14 @@ request, and then the request's headers::
     {'Accept-Encoding': 'identity, deflate, compress, gzip',
     'Accept': '*/*', 'User-Agent': 'python-requests/1.2.0'}
 
+To send your own ``User-Agent`` from every new session without touching your
+code, set the ``REQUESTS_USER_AGENT`` environment variable::
+
+    $ export REQUESTS_USER_AGENT="my-app/1.0 (+https://example.com)"
+
+A ``User-Agent`` passed in ``headers=`` or set on ``Session.headers`` still
+takes priority.
+
 .. _prepared-requests:
 
 Prepared Requests
@@ -1032,7 +1040,13 @@ library to use SSLv3::
 Example: Automatic Retries
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, Requests does not retry failed connections. However, it is possible
+By default, Requests retries a failed *connection* (a failed DNS lookup, a
+refused connection or a connect timeout) up to 3 times, waiting 0s, 0.5s and
+1s between attempts. Requests that reached the server are never retried by
+default, so nothing is sent twice. To turn this off, mount an adapter with
+``HTTPAdapter(max_retries=0)``.
+
+For anything more, it is possible
 to implement automatic retries with a powerful array of features, including
 backoff, within a Requests :class:`Session <requests.Session>` using the
 `urllib3.util.Retry`_ class::
@@ -1087,9 +1101,13 @@ Timeouts
 --------
 
 Most requests to external servers should have a timeout attached, in case the
-server is not responding in a timely manner. By default, requests do not time
-out unless a timeout value is set explicitly. Without a timeout, your code may
-hang for minutes or more.
+server is not responding in a timely manner. If you don't pass a timeout,
+Requests uses the session's default, :attr:`Session.timeout
+<requests.Session.timeout>`, which is 10 seconds for both the connect and the
+read timeout. You can change it for every request a session makes::
+
+    s = requests.Session()
+    s.timeout = (3.05, 60)
 
 The **connect** timeout is the number of seconds Requests will wait for your
 client to establish a connection to a remote machine (corresponding to the
@@ -1113,12 +1131,14 @@ timeouts. Specify a tuple if you would like to set the values separately::
     r = requests.get('https://github.com', timeout=(3.05, 27))
 
 If the remote server is very slow, you can tell Requests to wait forever for
-a response, by passing None as a timeout value and then retrieving a cup of
-coffee.
+a response, by passing ``(None, None)`` as the timeout and then retrieving a
+cup of coffee. (A plain ``None`` means "use the session default".)
 
 ::
 
-    r = requests.get('https://github.com', timeout=None)
+    r = requests.get('https://github.com', timeout=(None, None))
+
+To make a whole session wait forever, set ``s.timeout = None``.
 
 .. note:: The connect timeout applies to each connection attempt to an IP address.
           If multiple addresses exist for a domain name, the underlying ``urllib3`` will

@@ -101,6 +101,9 @@ REDIRECT_STATI: Final[tuple[int, ...]] = (  # type: ignore[assignment]
 )
 
 DEFAULT_REDIRECT_LIMIT: int = 30
+#: Default timeout (in seconds) applied by :class:`~requests.Session` when a
+#: request doesn't specify one. Used for both the connect and the read timeout.
+DEFAULT_TIMEOUT: float = 10
 CONTENT_CHUNK_SIZE: int = 10 * 1024
 ITER_CHUNK_SIZE: int = 512
 

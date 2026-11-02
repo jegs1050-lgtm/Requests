@@ -948,13 +948,24 @@ def default_user_agent(name: str = "python-requests") -> str:
     return f"{name}/{__version__}"
 
 
+#: Environment variable that, when set to a non-empty value, replaces the
+#: default ``User-Agent`` header of every new :class:`~requests.Session`.
+USER_AGENT_ENV_VAR = "REQUESTS_USER_AGENT"
+
+
 def default_headers() -> CaseInsensitiveDict[str]:
     """
+    Return the headers a new :class:`~requests.Session` starts with.
+
+    The ``User-Agent`` is ``python-requests/<version>`` unless the
+    ``REQUESTS_USER_AGENT`` environment variable is set to a non-empty value.
+
     :rtype: requests.structures.CaseInsensitiveDict
     """
+    user_agent = os.environ.get(USER_AGENT_ENV_VAR, "").strip()
     return CaseInsensitiveDict(
         {
-            "User-Agent": default_user_agent(),
+            "User-Agent": user_agent or default_user_agent(),
             "Accept-Encoding": DEFAULT_ACCEPT_ENCODING,
             "Accept": "*/*",
             "Connection": "keep-alive",

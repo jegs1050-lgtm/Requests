@@ -38,6 +38,7 @@ from .hooks import default_hooks, dispatch_hook
 # formerly defined here, reexposed here for backward compatibility
 from .models import (  # noqa: F401
     DEFAULT_REDIRECT_LIMIT,
+    DEFAULT_TIMEOUT,
     REDIRECT_STATI,
     PreparedRequest,
     Request,
@@ -437,6 +438,7 @@ class Session(SessionRedirectMixin):
         "stream",
         "trust_env",
         "max_redirects",
+        "timeout",
     ]
 
     def __init__(self) -> None:
@@ -486,6 +488,13 @@ class Session(SessionRedirectMixin):
         #: This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is
         #: 30.
         self.max_redirects = DEFAULT_REDIRECT_LIMIT
+
+        #: Default timeout used when a request is sent without one, as a float
+        #: or a :ref:`(connect timeout, read timeout) <timeouts>` tuple.
+        #: This defaults to requests.models.DEFAULT_TIMEOUT, which is 10
+        #: seconds. Set it to ``None`` to wait indefinitely (the historical
+        #: behaviour of requests).
+        self.timeout: _t.TimeoutType = DEFAULT_TIMEOUT
 
         #: Trust environment settings for proxy configuration, default
         #: authentication and similar.
@@ -594,7 +603,8 @@ class Session(SessionRedirectMixin):
             Basic/Digest/Custom HTTP Auth.
         :param timeout: (optional) How many seconds to wait for the server to send
             data before giving up, as a float, or a :ref:`(connect timeout,
-            read timeout) <timeouts>` tuple.
+            read timeout) <timeouts>` tuple. Defaults to :attr:`Session.timeout`
+            (10 seconds unless changed).
         :type timeout: float or tuple
         :param allow_redirects: (optional) Set to True by default.
         :type allow_redirects: bool
@@ -759,6 +769,8 @@ class Session(SessionRedirectMixin):
         kwargs.setdefault("stream", self.stream)
         kwargs.setdefault("verify", self.verify)
         kwargs.setdefault("cert", self.cert)
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self.timeout
         if "proxies" not in kwargs:
             kwargs["proxies"] = resolve_proxies(request, self.proxies, self.trust_env)
 
@@ -901,6 +913,8 @@ class Session(SessionRedirectMixin):
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
+        # Sessions pickled before ``timeout`` existed keep their old behaviour.
+        self.timeout = None
         for attr, value in state.items():
             setattr(self, attr, value)
 

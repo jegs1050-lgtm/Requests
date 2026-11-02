@@ -815,6 +815,43 @@ class TestRequests:
             r = requests.get(url, auth=auth)
             assert '"auth"' in r.request.headers["Authorization"]
 
+    def test_DIGEST_AUTH_INT_HTTP_200_OK_GET(self, httpbin):
+        """Servers that only offer qop=auth-int are now supported."""
+        for authtype in self.digest_auth_algo:
+            auth = HTTPDigestAuth("user", "pass")
+            url = httpbin("digest-auth", "auth-int", "user", "pass", authtype, "never")
+
+            r = requests.get(url, auth=auth)
+            assert r.status_code == 200
+            assert 'qop="auth-int"' in r.request.headers["Authorization"]
+
+            s = requests.Session()
+            s.auth = HTTPDigestAuth("user", "pass")
+            assert s.get(url).status_code == 200
+            # The second request reuses the nonce without a new 401.
+            r = s.get(url)
+            assert r.status_code == 200
+            assert r.history == []
+
+    def test_DIGEST_AUTH_INT_WRONG_PASSWORD(self, httpbin):
+        auth = HTTPDigestAuth("user", "wrongpass")
+        url = httpbin("digest-auth", "auth-int", "user", "pass", "MD5", "never")
+        assert requests.get(url, auth=auth).status_code == 401
+
+    @pytest.mark.parametrize(
+        "prefer_auth_int, expected_qop", ((False, "auth"), (True, "auth-int"))
+    )
+    def test_DIGEST_QOP_CHOICE_WHEN_BOTH_OFFERED(
+        self, httpbin, prefer_auth_int, expected_qop
+    ):
+        # httpbin offers "auth, auth-int" for an unrecognised qop segment.
+        url = httpbin("digest-auth", "both", "user", "pass", "MD5", "never")
+        auth = HTTPDigestAuth("user", "pass", prefer_auth_int=prefer_auth_int)
+
+        r = requests.get(url, auth=auth)
+        assert r.status_code == 200
+        assert f'qop="{expected_qop}"' in r.request.headers["Authorization"]
+
     def test_POSTBIN_GET_POST_FILES(self, httpbin):
         url = httpbin("post")
         requests.post(url).raise_for_status()
@@ -2536,7 +2573,7 @@ class TestMorselToCookieMaxAge:
 class TestTimeout:
     def test_stream_timeout(self, httpbin):
         try:
-            requests.get(httpbin("delay/10"), timeout=2.0)
+            requests.get(httpbin("delay/3"), timeout=2.0)
         except requests.exceptions.Timeout as e:
             assert "Read timed out" in e.args[0].args[0]
 
@@ -2570,7 +2607,7 @@ class TestTimeout:
     )
     def test_read_timeout(self, httpbin, timeout):
         try:
-            requests.get(httpbin("delay/10"), timeout=timeout)
+            requests.get(httpbin("delay/1"), timeout=timeout)
             pytest.fail("The recv() request should time out.")
         except ReadTimeout:
             pass
@@ -2600,6 +2637,65 @@ class TestTimeout:
         """See: https://github.com/psf/requests/issues/2316"""
         r = requests.request(b"GET", httpbin("get"))
         assert r.ok
+
+    @staticmethod
+    def _timeout_sent(session, url, **kwargs):
+        """Return the timeout the session hands to its adapter."""
+        adapter = session.get_adapter(url)
+        with mock.patch.object(adapter, "send", wraps=adapter.send) as send:
+            session.get(url, **kwargs)
+        return send.call_args.kwargs["timeout"]
+
+    def test_session_default_timeout(self, httpbin):
+        s = requests.Session()
+        assert s.timeout == requests.models.DEFAULT_TIMEOUT == 10
+        assert self._timeout_sent(s, httpbin("get")) == 10
+
+    def test_session_default_timeout_none_passes_through(self, httpbin):
+        s = requests.Session()
+        s.timeout = None
+        assert self._timeout_sent(s, httpbin("get")) is None
+
+    @pytest.mark.parametrize("timeout", (3, (1, 2), Urllib3Timeout(connect=1, read=2)))
+    def test_explicit_timeout_overrides_session_default(self, httpbin, timeout):
+        s = requests.Session()
+        s.timeout = 99
+        assert self._timeout_sent(s, httpbin("get"), timeout=timeout) == timeout
+
+    def test_wait_forever_with_none_tuple(self, httpbin):
+        s = requests.Session()
+        assert self._timeout_sent(s, httpbin("get"), timeout=(None, None)) == (
+            None,
+            None,
+        )
+
+    def test_session_default_timeout_is_enforced(self, httpbin):
+        s = requests.Session()
+        s.timeout = (None, 0.1)
+        with pytest.raises(ReadTimeout):
+            s.get(httpbin("delay/1"))
+
+    def test_session_default_timeout_used_by_send(self, httpbin):
+        s = requests.Session()
+        s.timeout = 7
+        prep = s.prepare_request(requests.Request("GET", httpbin("get")))
+        adapter = s.get_adapter(prep.url)
+        with mock.patch.object(adapter, "send", wraps=adapter.send) as send:
+            s.send(prep)
+        assert send.call_args.kwargs["timeout"] == 7
+
+    def test_session_timeout_survives_pickling(self):
+        s = requests.Session()
+        s.timeout = (2, 5)
+        assert pickle.loads(pickle.dumps(s)).timeout == (2, 5)
+
+    def test_unpickling_old_session_without_timeout(self):
+        s = requests.Session()
+        state = s.__getstate__()
+        del state["timeout"]
+        restored = requests.Session.__new__(requests.Session)
+        restored.__setstate__(state)
+        assert restored.timeout is None
 
 
 SendCall = collections.namedtuple("SendCall", ("args", "kwargs"))
