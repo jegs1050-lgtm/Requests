@@ -66,6 +66,18 @@ and Requests supports this out of the box as well::
     >>> requests.get(url, auth=HTTPDigestAuth('user', 'pass'))
     <Response [200]>
 
+Both the ``auth`` and ``auth-int`` quality-of-protection modes are supported.
+``auth-int`` also signs the request body, so tampering with it in transit is
+detected. It is used automatically when it's the only mode the server offers;
+if the server offers both, pass ``prefer_auth_int=True`` to choose it::
+
+    >>> auth = HTTPDigestAuth('user', 'pass', prefer_auth_int=True)
+    >>> requests.post(url, data=b'payload', auth=auth)
+
+``auth-int`` needs to read the body before sending it, so it works with bytes,
+strings and seekable files, but not with generators or other streams. For
+those, Requests falls back to ``auth`` when the server allows it.
+
 
 OAuth 1 Authentication
 ----------------------

@@ -17,7 +17,7 @@ from base64 import b64encode
 from typing import TYPE_CHECKING, Any, Final, cast, overload
 
 from ._internal_utils import to_native_string
-from .compat import basestring, str, urlparse
+from .compat import basestring, is_urllib3_1, str, urlparse
 from .cookies import extract_cookies_to_jar
 from .utils import parse_dict_header
 
@@ -121,11 +121,53 @@ class HTTPProxyAuth(HTTPBasicAuth):
         return r
 
 
+def _body_bytes_for_digest(body: Any) -> bytes | None:
+    """Return the exact bytes that will be sent as the request body, for
+    computing a ``qop="auth-int"`` digest.
+
+    Returns ``None`` when the body can't be read without consuming it (for
+    example a generator, or a file that can't seek back).
+    """
+    if body is None:
+        return b""
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    if isinstance(body, str):
+        # Match how the body is encoded on the wire: urllib3 2.x uses UTF-8,
+        # urllib3 1.x hands str bodies to http.client, which uses Latin-1.
+        try:
+            return body.encode("iso-8859-1" if is_urllib3_1 else "utf-8")
+        except UnicodeEncodeError:
+            return None
+    read = getattr(body, "read", None)
+    tell = getattr(body, "tell", None)
+    seek = getattr(body, "seek", None)
+    if read is None or tell is None or seek is None:
+        return None
+    try:
+        start = tell()
+        data = read()
+        seek(start)
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return data if isinstance(data, bytes) else None
+
+
 class HTTPDigestAuth(AuthBase):
-    """Attaches HTTP Digest Authentication to the given Request object."""
+    """Attaches HTTP Digest Authentication to the given Request object.
+
+    Supports the ``auth`` and ``auth-int`` quality-of-protection (qop)
+    modes. ``auth-int`` also protects the request body, so it needs a body
+    that can be read without consuming it (bytes, a string or a seekable
+    file). When the server offers both modes, ``auth`` is used unless
+    ``prefer_auth_int=True``.
+    """
 
     username: bytes | str
     password: bytes | str
+    prefer_auth_int: bool
     _thread_local: threading.local
     last_nonce: str
     nonce_count: int
@@ -134,13 +176,24 @@ class HTTPDigestAuth(AuthBase):
     num_401_calls: int | None
 
     @overload
-    def __init__(self, username: str, password: str) -> None: ...
+    def __init__(
+        self, username: str, password: str, *, prefer_auth_int: bool = ...
+    ) -> None: ...
     @overload
-    def __init__(self, username: bytes, password: bytes) -> None: ...
+    def __init__(
+        self, username: bytes, password: bytes, *, prefer_auth_int: bool = ...
+    ) -> None: ...
 
-    def __init__(self, username: bytes | str, password: bytes | str) -> None:
+    def __init__(
+        self,
+        username: bytes | str,
+        password: bytes | str,
+        *,
+        prefer_auth_int: bool = False,
+    ) -> None:
         self.username = username
         self.password = password
+        self.prefer_auth_int = prefer_auth_int
         # Keep state in per-thread local storage
         self._thread_local = threading.local()
 
@@ -154,8 +207,29 @@ class HTTPDigestAuth(AuthBase):
             self._thread_local.pos = None
             self._thread_local.num_401_calls = None
 
-    def build_digest_header(self, method: str, url: str) -> str | None:
+    def _choose_qop(self, qop: str | None, body: Any) -> str | None:
+        """Pick the qop mode to answer the challenge with.
+
+        Returns ``""`` for a challenge without qop (RFC 2069 compatibility),
+        ``"auth"`` or ``"auth-int"``, or ``None`` if no offered mode can be used.
         """
+        if not qop:
+            return ""
+        offered = {option.strip().lower() for option in qop.split(",")}
+        can_hash_body = _body_bytes_for_digest(body) is not None
+        if "auth-int" in offered and can_hash_body:
+            if self.prefer_auth_int or "auth" not in offered:
+                return "auth-int"
+        if "auth" in offered:
+            return "auth"
+        return None
+
+    def build_digest_header(
+        self, method: str, url: str, body: Any = None
+    ) -> str | None:
+        """Build the ``Authorization`` header answering the stored challenge.
+
+        :param body: the request body; only needed for ``qop="auth-int"``.
         :rtype: str
         """
 
@@ -210,8 +284,10 @@ class HTTPDigestAuth(AuthBase):
         def KD(s: str, d: str) -> str:
             return hash_utf8(f"{s}:{d}")
 
-        # XXX not implemented yet
-        entdig = None
+        chosen_qop = self._choose_qop(qop, body)
+        if chosen_qop is None:
+            return None
+
         p_parsed = urlparse(url)
         #: path is request-uri defined in RFC 2616 which should not be empty
         path = p_parsed.path or "/"
@@ -219,7 +295,11 @@ class HTTPDigestAuth(AuthBase):
             path += f"?{p_parsed.query}"
 
         A1 = f"{self.username}:{realm}:{self.password}"
-        A2 = f"{method}:{path}"
+        # For auth-int, A2 also covers a hash of the request body (RFC 7616).
+        body_hash = ""
+        if chosen_qop == "auth-int":
+            body_hash = ":" + hash_utf8(cast(bytes, _body_bytes_for_digest(body)))
+        A2 = f"{method}:{path}{body_hash}"
 
         HA1 = hash_utf8(A1)
         HA2 = hash_utf8(A2)
@@ -238,14 +318,11 @@ class HTTPDigestAuth(AuthBase):
         if _algorithm == "MD5-SESS":
             HA1 = hash_utf8(f"{HA1}:{nonce}:{cnonce}")  # type: ignore[reportConstantRedefinition]  # RFC 2617 terminology
 
-        if not qop:
+        if not chosen_qop:
             respdig = KD(HA1, f"{nonce}:{HA2}")
-        elif qop == "auth" or "auth" in qop.split(","):
-            noncebit = f"{nonce}:{ncvalue}:{cnonce}:auth:{HA2}"
-            respdig = KD(HA1, noncebit)
         else:
-            # XXX handle auth-int.
-            return None
+            noncebit = f"{nonce}:{ncvalue}:{cnonce}:{chosen_qop}:{HA2}"
+            respdig = KD(HA1, noncebit)
 
         self._thread_local.last_nonce = nonce
 
@@ -258,10 +335,8 @@ class HTTPDigestAuth(AuthBase):
             base += f', opaque="{opaque}"'
         if algorithm:
             base += f', algorithm="{algorithm}"'
-        if entdig:
-            base += f', digest="{entdig}"'
-        if qop:
-            base += f', qop="auth", nc={ncvalue}, cnonce="{cnonce}"'
+        if chosen_qop:
+            base += f', qop="{chosen_qop}", nc={ncvalue}, cnonce="{cnonce}"'
 
         return f"Digest {base}"
 
@@ -305,7 +380,7 @@ class HTTPDigestAuth(AuthBase):
             prep.prepare_cookies(cookie_jar)
 
             _digest_auth = self.build_digest_header(
-                cast(str, prep.method), cast(str, prep.url)
+                cast(str, prep.method), cast(str, prep.url), prep.body
             )
             if _digest_auth:
                 prep.headers["Authorization"] = _digest_auth
@@ -324,7 +399,7 @@ class HTTPDigestAuth(AuthBase):
         # If we have a saved nonce, skip the 401
         if self._thread_local.last_nonce:
             _digest_auth = self.build_digest_header(
-                cast(str, r.method), cast(str, r.url)
+                cast(str, r.method), cast(str, r.url), r.body
             )
             if _digest_auth:
                 r.headers["Authorization"] = _digest_auth

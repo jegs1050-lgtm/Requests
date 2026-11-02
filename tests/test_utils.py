@@ -1011,3 +1011,41 @@ def test_should_bypass_proxies_win_registry_ProxyOverride_value(monkeypatch):
     monkeypatch.setattr(winreg, "OpenKey", OpenKey)
     monkeypatch.setattr(winreg, "QueryValueEx", QueryValueEx)
     assert should_bypass_proxies("http://example.com/", None) is False
+
+
+class TestUserAgentOverride:
+    def test_default_user_agent_without_env(self, monkeypatch):
+        from requests import __version__
+        from requests.utils import default_headers
+
+        monkeypatch.delenv("REQUESTS_USER_AGENT", raising=False)
+        assert default_headers()["User-Agent"] == f"python-requests/{__version__}"
+
+    def test_env_var_overrides_user_agent(self, monkeypatch):
+        import requests
+
+        monkeypatch.setenv("REQUESTS_USER_AGENT", "my-app/1.0 (+https://example.com)")
+        assert requests.Session().headers["User-Agent"] == (
+            "my-app/1.0 (+https://example.com)"
+        )
+
+    @pytest.mark.parametrize("value", ("", "   "))
+    def test_blank_env_var_is_ignored(self, monkeypatch, value):
+        from requests.utils import default_headers, default_user_agent
+
+        monkeypatch.setenv("REQUESTS_USER_AGENT", value)
+        assert default_headers()["User-Agent"] == default_user_agent()
+
+    def test_env_var_user_agent_is_sent(self, monkeypatch, httpbin):
+        import requests
+
+        monkeypatch.setenv("REQUESTS_USER_AGENT", "my-app/2.0")
+        r = requests.get(httpbin("user-agent"))
+        assert r.json()["user-agent"] == "my-app/2.0"
+
+    def test_per_request_header_still_wins(self, monkeypatch, httpbin):
+        import requests
+
+        monkeypatch.setenv("REQUESTS_USER_AGENT", "my-app/2.0")
+        r = requests.get(httpbin("user-agent"), headers={"User-Agent": "other/3"})
+        assert r.json()["user-agent"] == "other/3"

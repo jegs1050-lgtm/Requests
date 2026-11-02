@@ -530,9 +530,9 @@ Timeouts
 --------
 
 You can tell Requests to stop waiting for a response after a given number of
-seconds with the ``timeout`` parameter. Nearly all production code should use
-this parameter in nearly all requests. Failure to do so can cause your program
-to hang indefinitely::
+seconds with the ``timeout`` parameter. If you don't pass one, Requests gives
+up after 10 seconds without a response; see :ref:`timeouts` to change that
+default::
 
     >>> requests.get('https://github.com/', timeout=0.001)
     Traceback (most recent call last):
@@ -545,8 +545,8 @@ to hang indefinitely::
     ``timeout`` is not a time limit on the entire response download;
     rather, an exception is raised if the server has not issued a
     response for ``timeout`` seconds (more precisely, if no bytes have been
-    received on the underlying socket for ``timeout`` seconds). If no timeout is specified explicitly, requests do
-    not time out.
+    received on the underlying socket for ``timeout`` seconds). If no timeout is
+    specified explicitly, the session default of 10 seconds is used.
 
 
 Errors and Exceptions

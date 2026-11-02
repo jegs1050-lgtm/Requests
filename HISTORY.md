@@ -4,7 +4,27 @@ Release History
 dev
 ---
 
-- \[Short description of non-trivial change.\]
+**Behavioural changes**
+
+- Requests now time out after 10 seconds by default instead of waiting
+  forever. Change it with `Session.timeout`, or pass `timeout=(None, None)`
+  to wait indefinitely for a single request.
+- Failed connections (DNS failures, refused connections, connect timeouts)
+  are now retried up to 3 times with a short backoff. Requests that reached
+  the server are still never retried. Use `HTTPAdapter(max_retries=0)` to
+  turn this off.
+
+**Improvements**
+
+- `HTTPDigestAuth` supports `qop="auth-int"`, which also signs the request
+  body. Pass `prefer_auth_int=True` to choose it when the server offers both.
+- Set the `REQUESTS_USER_AGENT` environment variable to replace the default
+  `User-Agent` header.
+
+**Bugfixes**
+
+- `HTTPDigestAuth` no longer fails when the server lists `auth` after another
+  qop option (e.g. `qop="auth-int, auth"`).
 
 
 2.34.2 (2026-05-14)
